@@ -15,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# -------------------- CUSTOM CSS FOR BETTER LOOK --------------------
+# -------------------- CUSTOM CSS --------------------
 st.markdown("""
 <style>
     .main-header { font-size: 2.5rem; font-weight: 700; color: #FF4B4B; margin-bottom: 0; }
@@ -74,7 +74,7 @@ with st.sidebar:
         "DGB/USDT", "RVN/USDT", "STORJ/USDT", "CVC/USDT", "MTL/USDT", "SKL/USDT",
         "CELR/USDT", "ANKR/USDT", "TOMO/USDT", "FET/USDT", "OCEAN/USDT", "BAND/USDT",
         "NKN/USDT", "STRAX/USDT", "ARPA/USDT", "CTXC/USDT", "DATA/USDT", "DOCK/USDT",
-        "FET/USDT", "FUN/USDT", "HOT/USDT", "LOOM/USDT", "MAN/USDT", "MITH/USDT",
+        "FUN/USDT", "HOT/USDT", "LOOM/USDT", "MAN/USDT", "MITH/USDT",
         "NCASH/USDT", "NPXS/USDT", "OST/USDT", "POLY/USDT", "POWR/USDT", "QKC/USDT",
         "QLC/USDT", "RCN/USDT", "RDN/USDT", "REQ/USDT", "RLC/USDT", "SNT/USDT",
         "SYS/USDT", "WAN/USDT", "WPR/USDT", "XZC/USDT", "YOYO/USDT"
@@ -328,11 +328,11 @@ if st.session_state.scanned_results:
                 hide_index=True,
                 column_config={
                     "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100),
-                    "Price": st.column_config.NumberRoute("Price", format="$%.8f"),
-                    "SL": st.column_config.NumberRoute("Stop Loss", format="$%.8f"),
-                    "TP1": st.column_config.NumberRoute("TP1", format="$%.8f"),
-                    "TP2": st.column_config.NumberRoute("TP2", format="$%.8f"),
-                    "RR": st.column_config.NumberRoute("R:R", format="%.2f"),
+                    "Price": st.column_config.NumberColumn("Price", format="$%.8f"),
+                    "SL": st.column_config.NumberColumn("Stop Loss", format="$%.8f"),
+                    "TP1": st.column_config.NumberColumn("TP1", format="$%.8f"),
+                    "TP2": st.column_config.NumberColumn("TP2", format="$%.8f"),
+                    "RR": st.column_config.NumberColumn("R:R", format="%.2f"),
                 }
             )
     
@@ -344,10 +344,10 @@ if st.session_state.scanned_results:
                 hide_index=True,
                 column_config={
                     "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100),
-                    "Price": st.column_config.NumberRoute("Price", format="$%.8f"),
-                    "SL": st.column_config.NumberRoute("Stop Loss", format="$%.8f"),
-                    "TP1": st.column_config.NumberRoute("TP1", format="$%.8f"),
-                    "TP2": st.column_config.NumberRoute("TP2", format="$%.8f"),
+                    "Price": st.column_config.NumberColumn("Price", format="$%.8f"),
+                    "SL": st.column_config.NumberColumn("Stop Loss", format="$%.8f"),
+                    "TP1": st.column_config.NumberColumn("TP1", format="$%.8f"),
+                    "TP2": st.column_config.NumberColumn("TP2", format="$%.8f"),
                 }
             )
     
