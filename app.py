@@ -3,125 +3,181 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from datetime import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import traceback
 
-st.set_page_config(page_title="MEXC Penny Stock Breakout Scanner", layout="wide")
+st.set_page_config(
+    page_title="MEXC Breakout Scanner",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# -------------------- Session State --------------------
+# -------------------- CUSTOM CSS FOR BETTER LOOK --------------------
+st.markdown("""
+<style>
+    .main-header { font-size: 2.5rem; font-weight: 700; color: #FF4B4B; margin-bottom: 0; }
+    .sub-header { font-size: 1rem; color: #888; margin-top: 0; }
+    .signal-card { background: #1E1E1E; border-radius: 10px; padding: 1rem; margin: 0.5rem 0; }
+    .long-text { color: #00FF88; font-weight: bold; }
+    .short-text { color: #FF4B4B; font-weight: bold; }
+    .wait-text { color: #AAAAAA; }
+    .metric-box { background: #262730; border-radius: 8px; padding: 0.8rem; text-align: center; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown('<h1 class="main-header">📊 MEXC Pro Breakout Scanner</h1>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">Real‑time scans for breakouts, volume surges & momentum setups on USDT perpetuals</p>', unsafe_allow_html=True)
+
+# -------------------- SIDEBAR SETTINGS --------------------
+with st.sidebar:
+    st.image("https://img.icons8.com/fluency/96/stock-exchange.png", width=80)
+    st.markdown("## ⚙️ Settings")
+    
+    # Timeframe selection
+    timeframe_map = {
+        "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "1h": "1h", "4h": "4h", "1d": "1d"
+    }
+    tf_display = st.selectbox("⏱️ Timeframe", list(timeframe_map.keys()), index=6)
+    timeframe = timeframe_map[tf_display]
+    
+    # Volume filter
+    st.markdown("### 📊 Volume Filter (24h)")
+    use_vol_filter = st.checkbox("Enable volume filter", value=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        min_vol = st.number_input("Min (USDT)", min_value=0, value=100_000, step=10_000)
+    with col2:
+        max_vol = st.number_input("Max (USDT)", min_value=0, value=5_000_000, step=50_000)
+    
+    # Scan settings
+    st.markdown("### 🚀 Scan Settings")
+    batch_size = st.slider("Batch size", 20, 200, 50, 10)
+    concurrency = st.slider("Threads", 1, 10, 5)
+    
+    # Pre-built fallback list (100+ popular MEXC perpetuals)
+    DEFAULT_PAIRS = [
+        "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT",
+        "ADA/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT", "MATIC/USDT", "SHIB/USDT",
+        "TRX/USDT", "ATOM/USDT", "LTC/USDT", "BCH/USDT", "NEAR/USDT", "UNI/USDT",
+        "APT/USDT", "ICP/USDT", "FIL/USDT", "ETC/USDT", "XLM/USDT", "VET/USDT",
+        "QNT/USDT", "ALGO/USDT", "MANA/USDT", "SAND/USDT", "AXS/USDT", "AAVE/USDT",
+        "EGLD/USDT", "FLOW/USDT", "THETA/USDT", "FTM/USDT", "GALA/USDT", "GRT/USDT",
+        "RUNE/USDT", "KAVA/USDT", "CHZ/USDT", "ZIL/USDT", "ENJ/USDT", "BAT/USDT",
+        "CRO/USDT", "DYDX/USDT", "IMX/USDT", "RNDR/USDT", "STX/USDT", "CRV/USDT",
+        "SNX/USDT", "COMP/USDT", "YFI/USDT", "SUSHI/USDT", "1INCH/USDT", "OMG/USDT",
+        "KSM/USDT", "WAVES/USDT", "ZEC/USDT", "DASH/USDT", "XMR/USDT", "IOST/USDT",
+        "IOTA/USDT", "ONT/USDT", "QTUM/USDT", "ZRX/USDT", "SC/USDT", "LSK/USDT",
+        "DGB/USDT", "RVN/USDT", "STORJ/USDT", "CVC/USDT", "MTL/USDT", "SKL/USDT",
+        "CELR/USDT", "ANKR/USDT", "TOMO/USDT", "FET/USDT", "OCEAN/USDT", "BAND/USDT",
+        "NKN/USDT", "STRAX/USDT", "ARPA/USDT", "CTXC/USDT", "DATA/USDT", "DOCK/USDT",
+        "FET/USDT", "FUN/USDT", "HOT/USDT", "LOOM/USDT", "MAN/USDT", "MITH/USDT",
+        "NCASH/USDT", "NPXS/USDT", "OST/USDT", "POLY/USDT", "POWR/USDT", "QKC/USDT",
+        "QLC/USDT", "RCN/USDT", "RDN/USDT", "REQ/USDT", "RLC/USDT", "SNT/USDT",
+        "SYS/USDT", "WAN/USDT", "WPR/USDT", "XZC/USDT", "YOYO/USDT"
+    ]
+    
+    st.markdown("### 📋 Pair Source")
+    source = st.radio("Load pairs from", ["Auto (MEXC + volume)", "Use default list", "Manual input"])
+    
+    if source == "Manual input":
+        manual_pairs = st.text_area("Enter pairs (one per line, e.g. BTC/USDT)")
+        if st.button("Load manual pairs"):
+            if manual_pairs.strip():
+                pairs = [p.strip() for p in manual_pairs.split('\n') if p.strip()]
+                st.session_state.all_pairs = pairs
+                st.session_state.scanned_results = []
+                st.session_state.batch_index = 0
+                st.rerun()
+    
+    st.markdown("---")
+    if st.button("🔄 Reset session"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+# -------------------- SESSION STATE INIT --------------------
 if 'all_pairs' not in st.session_state:
     st.session_state.all_pairs = []
 if 'scanned_results' not in st.session_state:
     st.session_state.scanned_results = []
 if 'batch_index' not in st.session_state:
     st.session_state.batch_index = 0
-if 'batch_size' not in st.session_state:
-    st.session_state.batch_size = 50
-if 'filtered_watchlist' not in st.session_state:
-    st.session_state.filtered_watchlist = pd.DataFrame()
 
-# -------------------- Sidebar Settings --------------------
-st.sidebar.header("🔧 Scanner Settings")
-timeframe = st.sidebar.selectbox("Timeframe", ["1d", "4h", "1h"], index=0)
-min_volume = st.sidebar.number_input("Min 24h Volume (USDT)", min_value=0, value=100_000, step=10_000)
-max_volume = st.sidebar.number_input("Max 24h Volume (USDT)", min_value=0, value=5_000_000, step=50_000)
-use_volume_filter = st.sidebar.checkbox("Apply Volume Filter", value=True)
-batch_size = st.sidebar.slider("Batch Size", 20, 200, 50, 10)
-concurrency = st.sidebar.slider("Threads", 1, 10, 5)
-st.session_state.batch_size = batch_size
-
-st.sidebar.markdown("---")
-if st.sidebar.button("🔄 Reset All Data"):
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    st.rerun()
-
-# -------------------- Load Pairs Automatically --------------------
-@st.cache_data(ttl=1800)  # 30 minutes
-def load_mexc_pairs(use_volume_filter, min_vol, max_vol):
-    """Load all USDT perpetual swaps from MEXC, optionally filter by volume."""
-    exchange = ccxt.mexc({'enableRateLimit': True, 'timeout': 30000})
-    try:
-        # 1. Load markets to get all perpetual swaps
-        markets = exchange.load_markets()
-        all_perps = []
-        for symbol, market in markets.items():
-            if (symbol.endswith('/USDT') 
-                and market.get('swap', False)      # perpetual swap
-                and market.get('linear', False)    # USDT-margined
-                and market.get('active', False)):
-                all_perps.append(symbol)
-        
-        if not all_perps:
-            st.error("No perpetual swaps found from MEXC. Check API or use manual input.")
-            return []
-        
-        st.info(f"✅ Found {len(all_perps)} USDT perpetual swaps on MEXC")
-        
-        # 2. If volume filter is off, return all
-        if not use_volume_filter:
-            return all_perps[:500]  # limit for performance
-        
-        # 3. Fetch tickers for volume data
-        tickers = exchange.fetch_tickers()
-        filtered = []
-        for sym in all_perps:
-            ticker = tickers.get(sym)
-            if ticker and 'quoteVolume' in ticker:
-                qv = ticker['quoteVolume']
-                if min_vol <= qv <= max_vol:
-                    filtered.append(sym)
-        
-        if filtered:
-            st.success(f"✅ After volume filter: {len(filtered)} low‑cap pairs")
-            return filtered[:500]
-        else:
-            st.warning("No pairs match your volume range. Returning all perpetuals.")
-            return all_perps[:500]
-            
-    except Exception as e:
-        st.error(f"❌ Failed to load pairs: {e}")
-        # Fallback: try fetch_tickers only
-        try:
-            tickers = exchange.fetch_tickers()
-            fallback = [s for s in tickers if s.endswith('/USDT')]
-            st.warning(f"Falling back to {len(fallback)} USDT pairs from tickers.")
-            return fallback[:500]
-        except:
-            return []
-
-# -------------------- Load pairs if not already --------------------
-if not st.session_state.all_pairs:
-    with st.spinner("Loading MEXC pairs..."):
-        st.session_state.all_pairs = load_mexc_pairs(use_volume_filter, min_volume, max_volume)
-    if not st.session_state.all_pairs:
-        st.error("Could not load any pairs. Please check your internet or try again later.")
-        st.stop()
-    else:
-        st.success(f"Ready to scan {len(st.session_state.all_pairs)} pairs")
-
-# -------------------- Data Fetching & Analysis --------------------
-@st.cache_data(ttl=600)  # 10 minutes
-def fetch_ohlcv(symbol, timeframe='1d', limit=300):
+# -------------------- AUTO LOAD PAIRS --------------------
+def load_pairs_from_mexc(use_vol_filter, min_vol, max_vol):
+    """Load USDT perpetuals from MEXC with optional volume filter."""
     try:
         exchange = ccxt.mexc({'enableRateLimit': True, 'timeout': 30000})
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        markets = exchange.load_markets()
+        perps = []
+        for sym, m in markets.items():
+            if (sym.endswith('/USDT') 
+                and m.get('swap', False) 
+                and m.get('linear', False) 
+                and m.get('active', False)):
+                perps.append(sym)
+        if not use_vol_filter:
+            return perps
+        # Get tickers for volume
+        tickers = exchange.fetch_tickers()
+        filtered = []
+        for sym in perps:
+            t = tickers.get(sym)
+            if t and 'quoteVolume' in t and min_vol <= t['quoteVolume'] <= max_vol:
+                filtered.append(sym)
+        return filtered if filtered else perps
+    except Exception as e:
+        st.warning(f"Auto load failed: {e}")
+        return []
+
+# Determine pairs based on source
+if source == "Auto (MEXC + volume)" and not st.session_state.all_pairs:
+    with st.spinner("📡 Connecting to MEXC..."):
+        loaded = load_pairs_from_mexc(use_vol_filter, min_vol, max_vol)
+        if loaded:
+            st.session_state.all_pairs = loaded[:500]
+            st.success(f"✅ Loaded {len(loaded)} pairs from MEXC")
+        else:
+            st.warning("⚠️ Auto load failed, falling back to default list.")
+            st.session_state.all_pairs = DEFAULT_PAIRS
+
+elif source == "Use default list" and not st.session_state.all_pairs:
+    st.session_state.all_pairs = DEFAULT_PAIRS
+    st.info(f"📋 Using default list of {len(DEFAULT_PAIRS)} pairs")
+
+if not st.session_state.all_pairs:
+    st.warning("No pairs loaded. Please select a source and load.")
+    st.stop()
+
+# -------------------- SCANNING FUNCTIONS --------------------
+@st.cache_data(ttl=600)
+def fetch_ohlcv(symbol, tf, limit=200):
+    try:
+        ex = ccxt.mexc({'enableRateLimit': True, 'timeout': 30000})
+        ohlcv = ex.fetch_ohlcv(symbol, tf, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
     except:
         return None
 
-def detect_breakout(df):
+def analyze_pair(pair):
+    df = fetch_ohlcv(pair, timeframe, 200)
+    if df is None or len(df) < 100:
+        return None
     close = df['close']
     high = df['high']
     low = df['low']
     volume = df['volume']
     
-    # 20-day high breakout
-    recent_high = high.rolling(20).max()
-    above_high = close.iloc[-1] > recent_high.iloc[-2]
+    # Indicators
+    ema9 = close.ewm(span=9).mean()
+    ema20 = close.ewm(span=20).mean()
+    ema50 = close.ewm(span=50).mean()
     
     # Volume surge
     vol_ma10 = volume.rolling(10).mean()
@@ -135,143 +191,228 @@ def detect_breakout(df):
     rsi = 100 - (100 / (1 + rs))
     rsi_val = rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
     
-    # Consolidation (tight range)
-    range_10 = (high.rolling(10).max() - low.rolling(10).min()) / close.rolling(10).mean()
-    range_50 = (high.rolling(50).max() - low.rolling(50).min()) / close.rolling(50).mean()
-    consolidation = (range_10.iloc[-1] / range_50.iloc[-1]) < 0.5 if not pd.isna(range_50.iloc[-1]) else False
+    # 20-period high breakout
+    recent_high = high.rolling(20).max()
+    above_high = close.iloc[-1] > recent_high.iloc[-2]
     
-    # ADX (trend strength)
-    adx = df.ta.adx(length=14)['ADX_14'].iloc[-1] if hasattr(df, 'ta') else 25  # placeholder
+    # Trend
+    uptrend = close.iloc[-1] > ema50.iloc[-1]
+    downtrend = close.iloc[-1] < ema50.iloc[-1]
     
-    # Score
-    score = 0
-    if above_high:
-        score += 30
+    # Consolidation (Bollinger squeeze)
+    bb_mid = close.rolling(20).mean()
+    bb_std = close.rolling(20).std()
+    bb_width = (bb_mid + 2*bb_std - (bb_mid - 2*bb_std)) / bb_mid
+    bb_squeeze = bb_width.iloc[-1] < bb_width.rolling(20).mean().iloc[-1]
+    
+    # Score and direction
+    long_score = 0
+    short_score = 0
+    
+    if above_high and uptrend:
+        long_score += 30
     if vol_surge > 2:
-        score += 30
+        long_score += 30
+        short_score += 20
     elif vol_surge > 1.5:
-        score += 15
-    if rsi_val > 60:
-        score += 20
-    elif rsi_val > 50:
-        score += 10
-    if consolidation:
-        score += 20
-    if adx > 25:
-        score += 10
+        long_score += 15
+        short_score += 10
     
-    # Grade
-    if score >= 80:
-        grade = 'A+'
-    elif score >= 70:
-        grade = 'A'
-    elif score >= 60:
-        grade = 'B+'
-    elif score >= 50:
-        grade = 'B'
+    if rsi_val > 55 and uptrend:
+        long_score += 20
+    elif rsi_val < 45 and downtrend:
+        short_score += 20
+    
+    if bb_squeeze:
+        long_score += 15
+        short_score += 15
+    
+    if uptrend:
+        long_score += 10
+    if downtrend:
+        short_score += 10
+    
+    # Determine signal
+    if long_score >= 70:
+        signal = "LONG"
+        color = "#00FF88"
+        entry = close.iloc[-1]
+        sl = entry * 0.96  # 4% stop
+        tp1 = entry * 1.05  # 5% target
+        tp2 = entry * 1.10  # 10% target
+    elif short_score >= 70:
+        signal = "SHORT"
+        color = "#FF4B4B"
+        entry = close.iloc[-1]
+        sl = entry * 1.04
+        tp1 = entry * 0.95
+        tp2 = entry * 0.90
     else:
-        grade = 'C'
-    
-    entry = close.iloc[-1]
-    sl = entry * 0.92
-    tp = entry * 2.0
+        return None  # Skip weak signals
     
     return {
-        'Breakout Score': score,
-        'Grade': grade,
-        'Above 20d High': above_high,
+        'Pair': pair,
+        'Signal': signal,
+        'Color': color,
+        'Price': round(entry, 8),
+        'Score': max(long_score, short_score),
         'Volume Surge': round(vol_surge, 2),
         'RSI': round(rsi_val, 2),
-        'Consolidation': consolidation,
-        'Entry': entry,
-        'Stop Loss': sl,
-        'Take Profit': tp
+        'Breakout': above_high,
+        'SL': round(sl, 8),
+        'TP1': round(tp1, 8),
+        'TP2': round(tp2, 8),
+        'RR': round(abs(tp1 - entry) / abs(entry - sl), 2)
     }
 
-def analyze_pair(pair):
-    df = fetch_ohlcv(pair, timeframe, 200)
-    if df is None or len(df) < 100:
-        return None
-    try:
-        breakout = detect_breakout(df)
-        if breakout['Breakout Score'] < 40:  # filter weak signals
-            return None
-        return {'Pair': pair, 'Current Price': df['close'].iloc[-1], **breakout}
-    except:
-        return None
-
-def scan_batch(pairs, max_workers):
+def scan_batch(pairs, workers):
     results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {executor.submit(analyze_pair, pair): pair for pair in pairs}
-        for future in as_completed(future_map):
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(analyze_pair, p): p for p in pairs}
+        for f in as_completed(futures):
             try:
-                res = future.result(timeout=30)
+                res = f.result(timeout=20)
                 if res:
                     results.append(res)
             except:
                 pass
     return results
 
-# -------------------- UI: Scan Progress --------------------
-total_pairs = len(st.session_state.all_pairs)
-scanned_so_far = len(st.session_state.scanned_results)
-progress = scanned_so_far / total_pairs if total_pairs else 0
+# -------------------- MAIN INTERFACE --------------------
+total = len(st.session_state.all_pairs)
+scanned = len(st.session_state.scanned_results)
+progress = scanned / total if total else 0
+
+# Progress bar and stats
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("Total Pairs", total)
+with col2:
+    st.metric("Scanned", scanned)
+with col3:
+    st.metric("Signals Found", len(st.session_state.scanned_results))
+with col4:
+    st.metric("Batch", st.session_state.batch_index + 1)
+
 st.progress(progress)
-st.caption(f"Scanned: {scanned_so_far} / {total_pairs} pairs | Batch {st.session_state.batch_index+1}")
 
-if st.button("▶️ Scan Next Batch", disabled=(scanned_so_far >= total_pairs)):
-    start = scanned_so_far
-    end = min(start + st.session_state.batch_size, total_pairs)
-    batch = st.session_state.all_pairs[start:end]
-    with st.status(f"Scanning batch {st.session_state.batch_index+1}...", expanded=True) as status:
-        new_results = scan_batch(batch, concurrency)
-        st.session_state.scanned_results.extend(new_results)
-        st.session_state.batch_index += 1
-        status.update(label=f"Batch complete! Found {len(new_results)} signals", state="complete")
-    st.rerun()
+# Scan button
+col_btn, _ = st.columns([1, 3])
+with col_btn:
+    if st.button("▶️ Scan Next Batch", use_container_width=True, disabled=(scanned >= total)):
+        start = scanned
+        end = min(start + batch_size, total)
+        batch = st.session_state.all_pairs[start:end]
+        with st.status(f"🔍 Scanning batch {st.session_state.batch_index+1}..."):
+            new = scan_batch(batch, concurrency)
+            st.session_state.scanned_results.extend(new)
+            st.session_state.batch_index += 1
+        st.rerun()
 
-# -------------------- Display Results --------------------
+# Display results
 if st.session_state.scanned_results:
-    df_all = pd.DataFrame(st.session_state.scanned_results)
+    df = pd.DataFrame(st.session_state.scanned_results)
     
-    # Filter for strong signals
-    strong = df_all[
-        (df_all['Above 20d High'] == True) &
-        (df_all['Volume Surge'] > 1.5) &
-        (df_all['Grade'].isin(['A+', 'A', 'B+']))
-    ].sort_values('Breakout Score', ascending=False)
+    # Separate longs and shorts
+    longs = df[df['Signal'] == 'LONG'].sort_values('Score', ascending=False)
+    shorts = df[df['Signal'] == 'SHORT'].sort_values('Score', ascending=False)
     
-    st.subheader("📊 Top Breakout Signals")
-    if not strong.empty:
-        cols = ['Pair', 'Grade', 'Breakout Score', 'Current Price', 'Entry', 'Stop Loss', 'Take Profit',
-                'Volume Surge', 'RSI', 'Above 20d High', 'Consolidation']
-        st.dataframe(strong[cols].style.format({
-            'Current Price': '{:.8f}',
-            'Entry': '{:.8f}',
-            'Stop Loss': '{:.8f}',
-            'Take Profit': '{:.8f}',
-            'Breakout Score': '{:.0f}',
-            'Volume Surge': '{:.2f}',
-            'RSI': '{:.1f}'
-        }), use_container_width=True)
-    else:
-        st.info("No strong breakout signals yet. Try scanning more pairs.")
-    
-    with st.expander("Show all scanned results"):
-        st.dataframe(df_all)
-
-# -------------------- Manual Override (in case all fails) --------------------
-with st.sidebar:
     st.markdown("---")
-    st.header("Manual Override")
-    manual_input = st.text_area("Paste pairs (one per line, e.g. BTC/USDT)")
-    if st.button("Load Manual Pairs"):
-        if manual_input.strip():
-            pairs = [p.strip() for p in manual_input.split('\n') if p.strip()]
-            st.session_state.all_pairs = pairs
-            st.session_state.batch_index = 0
-            st.session_state.scanned_results = []
-            st.rerun()
+    st.subheader("🔥 Active Signals")
+    
+    if not longs.empty:
+        with st.expander(f"🟢 LONG Setups ({len(longs)})", expanded=True):
+            st.dataframe(
+                longs[['Pair', 'Score', 'Price', 'Volume Surge', 'RSI', 'Breakout', 'SL', 'TP1', 'TP2', 'RR']],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100),
+                    "Price": st.column_config.NumberRoute("Price", format="$%.8f"),
+                    "SL": st.column_config.NumberRoute("Stop Loss", format="$%.8f"),
+                    "TP1": st.column_config.NumberRoute("TP1", format="$%.8f"),
+                    "TP2": st.column_config.NumberRoute("TP2", format="$%.8f"),
+                    "RR": st.column_config.NumberRoute("R:R", format="%.2f"),
+                }
+            )
+    
+    if not shorts.empty:
+        with st.expander(f"🔴 SHORT Setups ({len(shorts)})", expanded=True):
+            st.dataframe(
+                shorts[['Pair', 'Score', 'Price', 'Volume Surge', 'RSI', 'Breakout', 'SL', 'TP1', 'TP2', 'RR']],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Score": st.column_config.ProgressColumn("Score", format="%d", min_value=0, max_value=100),
+                    "Price": st.column_config.NumberRoute("Price", format="$%.8f"),
+                    "SL": st.column_config.NumberRoute("Stop Loss", format="$%.8f"),
+                    "TP1": st.column_config.NumberRoute("TP1", format="$%.8f"),
+                    "TP2": st.column_config.NumberRoute("TP2", format="$%.8f"),
+                }
+            )
+    
+    # Download CSV
+    csv = df.to_csv(index=False)
+    st.download_button("📥 Download All Signals", csv, "mexc_signals.csv", mime="text/csv")
+    
+    st.markdown("---")
+    st.subheader("📈 Detailed Chart")
+    selected_pair = st.selectbox("Choose a pair for chart", df['Pair'].unique())
+    
+    # Show chart for selected pair
+    if selected_pair:
+        df_detail = fetch_ohlcv(selected_pair, timeframe, 200)
+        if df_detail is not None:
+            fig = go.Figure(data=[
+                go.Candlestick(
+                    x=df_detail['timestamp'][-100:],
+                    open=df_detail['open'][-100:],
+                    high=df_detail['high'][-100:],
+                    low=df_detail['low'][-100:],
+                    close=df_detail['close'][-100:],
+                    name="Price"
+                )
+            ])
+            # Add EMAs
+            ema9 = df_detail['close'].ewm(span=9).mean()[-100:]
+            ema20 = df_detail['close'].ewm(span=20).mean()[-100:]
+            fig.add_trace(go.Scatter(x=df_detail['timestamp'][-100:], y=ema9, name="EMA9", line=dict(color="cyan")))
+            fig.add_trace(go.Scatter(x=df_detail['timestamp'][-100:], y=ema20, name="EMA20", line=dict(color="orange")))
+            
+            fig.update_layout(
+                title=f"{selected_pair} – {tf_display}",
+                xaxis_rangeslider_visible=False,
+                height=500,
+                template="plotly_dark"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Show current signal details
+            signal_row = df[df['Pair'] == selected_pair].iloc[0]
+            sig_color = "#00FF88" if signal_row['Signal'] == 'LONG' else "#FF4B4B"
+            st.markdown(f"**Current Signal:** <span style='color:{sig_color}; font-size:1.2rem;'>{signal_row['Signal']}</span>", unsafe_allow_html=True)
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Score", signal_row['Score'])
+            with col2:
+                st.metric("Volume Surge", f"{signal_row['Volume Surge']}x")
+            with col3:
+                st.metric("RSI", signal_row['RSI'])
+            with col4:
+                st.metric("Breakout", "✅" if signal_row['Breakout'] else "❌")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Entry", f"${signal_row['Price']:.8f}")
+            with col2:
+                st.metric("Stop Loss", f"${signal_row['SL']:.8f}")
+            with col3:
+                st.metric("TP1", f"${signal_row['TP1']:.8f}")
+            with col4:
+                st.metric("TP2", f"${signal_row['TP2']:.8f}")
 
-st.sidebar.caption("If auto‑load fails, use manual input.")
+else:
+    st.info("👆 Click 'Scan Next Batch' to start scanning")
+
+# Footer
+st.markdown("---")
+st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | ⚠️ High risk – use stop losses")
