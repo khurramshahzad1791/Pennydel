@@ -27,7 +27,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<h1 class="main-header">📊 MEXC Pro Scanner</h1>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">Real‑time breakout scanner with full control • Auto‑fallback to 200+ pairs</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">Real‑time breakout scanner • Auto‑fallback to 200+ pairs • Full‑scan with progress</p>', unsafe_allow_html=True)
 
 # -------------------- SIDEBAR SETTINGS --------------------
 with st.sidebar:
@@ -109,9 +109,7 @@ DEFAULT_PAIRS = [
     "BQX/USDT", "BRD/USDT", "BTG/USDT", "BTS/USDT", "CDT/USDT", "CHAT/USDT",
     "CMT/USDT", "CND/USDT", "CTXC/USDT", "CVC/USDT", "DBC/USDT", "DENT/USDT",
     "DGD/USDT", "DLT/USDT", "DNT/USDT", "EDO/USDT", "ELEC/USDT", "ELF/USDT",
-    "ENG/USDT", "ENJ/USDT", "EOSDT/USDT", "EOSDTC/USDT", "EOSDT/USDT",
-    "EOSDTC/USDT", "EOSDT/USDT", "EOSDTC/USDT", "EOSDT/USDT", "EOSDTC/USDT",
-    "EOSDT/USDT", "EOSDTC/USDT", "EOSDT/USDT", "EOSDTC/USDT", "EOSDT/USDT"
+    "ENG/USDT", "ENJ/USDT", "EOSDT/USDT", "EOSDTC/USDT"
 ][:300]  # limit to 300 for performance
 
 # -------------------- SESSION STATE --------------------
@@ -122,59 +120,37 @@ if 'scanned_results' not in st.session_state:
 if 'batch_index' not in st.session_state:
     st.session_state.batch_index = 0
 
-# -------------------- LOAD PAIRS (ROBUST) --------------------
-def load_pairs_from_mexc():
-    """Load all USDT perpetual swaps from MEXC."""
-    try:
-        exchange = ccxt.mexc({
-            'enableRateLimit': True,
-            'timeout': 30000,
-            'options': {'defaultType': 'swap'}  # force swap market
-        })
-        markets = exchange.load_markets()
-        perps = []
-        for sym, m in markets.items():
-            # MEXC perpetuals are 'swap' and 'linear'
-            if (sym.endswith('/USDT') and
-                m.get('swap', False) and
-                m.get('linear', False) and
-                m.get('active', False)):
-                perps.append(sym)
-        return perps
-    except Exception as e:
-        st.warning(f"MEXC connection failed: {e}")
-        return []
-
-def load_pairs_with_volume_filter(perps, min_vol, max_vol):
-    """Filter perpetuals by 24h quote volume."""
+# -------------------- LOAD PAIRS (PROVEN METHOD) --------------------
+def load_pairs_from_mexc_tickers(use_vol_filter, min_vol, max_vol):
+    """
+    Load all USDT pairs from MEXC tickers (method used in working scripts).
+    Returns a list of symbols.
+    """
     try:
         exchange = ccxt.mexc({'enableRateLimit': True, 'timeout': 30000})
         tickers = exchange.fetch_tickers()
+        # Get all USDT pairs
+        all_usdt = [s for s in tickers.keys() if s.endswith('/USDT')]
+        if not use_vol_filter:
+            return all_usdt
+        # Filter by 24h quote volume
         filtered = []
-        for sym in perps:
+        for sym in all_usdt:
             t = tickers.get(sym)
             if t and 'quoteVolume' in t and min_vol <= t['quoteVolume'] <= max_vol:
                 filtered.append(sym)
-        return filtered
-    except:
-        return perps  # if volume fetch fails, return unfiltered
+        return filtered if filtered else all_usdt  # fallback to all if filter empties
+    except Exception as e:
+        st.warning(f"MEXC ticker fetch failed: {e}")
+        return []
 
 # Decide which pairs to use
 if source == "Auto (MEXC live)" and not st.session_state.all_pairs:
-    with st.spinner("📡 Connecting to MEXC..."):
-        raw_perps = load_pairs_from_mexc()
-        if raw_perps:
-            if use_vol_filter:
-                with st.spinner("Applying volume filter..."):
-                    final_pairs = load_pairs_with_volume_filter(raw_perps, min_vol, max_vol)
-            else:
-                final_pairs = raw_perps
-            if final_pairs:
-                st.session_state.all_pairs = final_pairs[:500]
-                st.success(f"✅ Loaded {len(final_pairs)} pairs from MEXC")
-            else:
-                st.warning("Volume filter returned zero pairs. Using default list.")
-                st.session_state.all_pairs = DEFAULT_PAIRS
+    with st.spinner("📡 Fetching pairs from MEXC tickers..."):
+        loaded = load_pairs_from_mexc_tickers(use_vol_filter, min_vol, max_vol)
+        if loaded:
+            st.session_state.all_pairs = loaded[:500]
+            st.success(f"✅ Loaded {len(loaded)} pairs from MEXC")
         else:
             st.warning("MEXC auto load failed. Using default list.")
             st.session_state.all_pairs = DEFAULT_PAIRS
@@ -332,9 +308,9 @@ with col4:
 # Progress bar
 st.progress(progress)
 
-# Scan button
-col_btn, _ = st.columns([1, 3])
-with col_btn:
+# Scan buttons
+col1, col2 = st.columns(2)
+with col1:
     if st.button("▶️ Scan Next Batch", use_container_width=True, disabled=(scanned >= total)):
         start = scanned
         end = min(start + batch_size, total)
@@ -344,6 +320,25 @@ with col_btn:
             st.session_state.scanned_results.extend(new)
             st.session_state.batch_index += 1
             status.update(label=f"Batch complete! Found {len(new)} signals", state="complete")
+        st.rerun()
+
+with col2:
+    if st.button("▶️▶️ Full Scan (All Pairs)", use_container_width=True, disabled=(scanned >= total)):
+        # Reset results
+        st.session_state.scanned_results = []
+        st.session_state.batch_index = 0
+        total_batches = (total + batch_size - 1) // batch_size
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        for batch_idx in range(total_batches):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, total)
+            batch = st.session_state.all_pairs[start:end]
+            status_text.text(f"Scanning batch {batch_idx+1}/{total_batches}...")
+            new = scan_batch(batch, concurrency)
+            st.session_state.scanned_results.extend(new)
+            progress_bar.progress((batch_idx + 1) / total_batches)
+        st.success(f"Full scan complete! Found {len(st.session_state.scanned_results)} signals.")
         st.rerun()
 
 # Display results if any
@@ -448,7 +443,7 @@ if st.session_state.scanned_results:
     else:
         st.info("No signals to display.")
 else:
-    st.info("👆 Click 'Scan Next Batch' to start scanning")
+    st.info("👆 Click 'Scan Next Batch' or 'Full Scan' to start scanning")
 
 # Footer
 st.markdown("---")
